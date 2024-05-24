@@ -4,6 +4,14 @@
 
 #### A library that manages tools (functions) for Local LLMs
 
+### How to Use
+
+Install it:
+`pip install give_up_the_func`
+
+
+
+
 ### Problem Statement
 
 In an LLM API call, you can describe functions and have the model intelligently choose to output a JSON object containing arguments to call one or many functions. This JSON object can then be used to execute 

@@ -2,16 +2,17 @@ from setuptools import setup, find_packages
 
 setup(
     name='give_up_the_func', 
-    version='0.0.1',  
+    version='0.0.2',  
     author='gravitymonkey',  
     author_email='jason@gravitymonkey.com',  
     description='A helper library for using function calling on local LLMs.',  
     long_description=open('README.md').read(),  # Long description read from the README.md
-    long_description_content_type='text/markdown',  # Type of the long description
-    url='https://github.com/gravitymonkey/give_up_the_func',  # URL of your project
-    packages=find_packages(),  # Packages to include
+    long_description_content_type='text/markdown',  
+    url='https://github.com/gravitymonkey/give_up_the_func', 
+    packages=find_packages(), 
     install_requires=[
-        'openai',  # Dependencies, you can add more as required
+        'openai',
+        'typing', 
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',  
