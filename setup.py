@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='give_up_the_func', 
-    version='0.0.2',  
+    version='0.0.3',  
     author='gravitymonkey',  
     author_email='jason@gravitymonkey.com',  
     description='A helper library for using function calling on local LLMs.',  
