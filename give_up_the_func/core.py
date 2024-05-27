@@ -246,9 +246,24 @@ def list_tools(client: object, model: str, prompt: str) -> dict[str, str]:
             return response, [{"error": f"wrong model name? {str(e)}"}]
         return response, [{"error": f"{str(e)}"}]
 
+def reconcile_response(tools, tool_responses, client, model, original_prompt):
+    if tool_responses is not None:
+        # answer the original question with the results and form a response
+        messages = [
+            {"role": "system", "content": f"Using the data retrieved from the following functions, generate an appropriate response to the user's question(s). \n **** \n The result of using {tools} is {tool_responses}."},
+            {"role": "user", "content": original_prompt},
+        ]
+        full_response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            stream=False,
+        )
+        return full_response, full_response.choices[0].message.content
+    return None, None
+
 def use_tools(client, model, prompt):
     """
-    Uses the specified tools to generate a response to the user's question.
+    A conveinience method to use the specified tools to generate a response to the user's question.
 
     Args:
         client (Client): The client object used to interact with the chat API.
@@ -261,16 +276,5 @@ def use_tools(client, model, prompt):
     """
     response, xx = list_tools(client, model, prompt)
     tool_responses = exec_tools(xx)
-    if tool_responses is not None:
-        # answer the original question with the results and form a response
-        messages = [
-            {"role": "system", "content": f"Using the data retrieved from the following functions, generate an appropriate response to the user's question(s). \n **** \n The result of using {xx} is {tool_responses}."},
-            {"role": "user", "content": prompt},
-        ]
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            stream=False,
-        )
-        return response.choices[0].message.content
-    return None
+    full_response, answer = reconcile_response(xx, tool_responses, client, model, prompt)
+    return answer
