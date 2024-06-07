@@ -5,6 +5,25 @@ from openai import OpenAI
 import os
 import logging
 
+
+ADMIN_FUNCTIONS_PROMPT = f"""
+    You must follow these instructions:
+    Always select one or more of the above tools based on the user query
+    If a tool is found, you must respond in the JSON format matching the following schema:
+    {{
+    "tools": {{
+            "name": "<name of the selected tool>",
+            "arguments": <parameters for the selected tool as explicitly stated in the user's query, matching the tool's JSON schema>
+    }}
+    }}
+    Do not make up any tools or use any tools that are not listed above.
+    Only specify paramaters for tool_input that are clearly defined in the user's prompt that follows.
+    If there are missing required parameters to call a tool, do not return the tool.
+    If there are multiple tools required, make sure a list of tools are returned in a JSON array.
+    If there is no tool that match the user request, you MUST respond with empty json.
+    DO NOT add any additional Notes or Explanations.
+    """
+
 # Create a logger for the library
 logger = logging.getLogger('give_up_the_func')
 
@@ -53,8 +72,8 @@ def exec_tools(tools):
 
     Args:
         tools (list): A list of tools to execute. Each tool is represented as a dictionary with two keys:
-                      - 'tool': The name of the tool (a string).
-                      - 'tool_input': The input parameters for the tool (a dictionary).
+                      - 'name': The name of the tool (a string).
+                      - 'arguments': The input parameters for the tool (a dictionary).
 
     Returns:
         list: A list of dictionaries representing the responses of the executed tools. Each dictionary has two keys:
@@ -67,13 +86,19 @@ def exec_tools(tools):
     """
     if tools is None or len(tools) == 0:
         return None
+    if type(tools) is str:
+        tools = json.loads(tools)
+    if tools[0].get("error"):
+        return None
     func_list = get_toolbox()
     responses = []
-    # confirm the tool is in the toolbox - in case the LLM is making up tools
+    # confirm the tool is in the toolbox - in case the LLM is making up toolnames!
     for tool in tools:
         if type(tool) is dict:
-            tool_name = tool["tool"]
-            tool_input = tool["tool_input"]
+            tool_name = tool["name"]
+            tool_input = tool["arguments"]
+            if type(tool_input) is str:
+                tool_input = json.loads(tool_input)
             for func in func_list:
                 if func.__name__ == tool_name:
                     try:
@@ -163,29 +188,35 @@ def _make_functions(as_json=True):
     else:
         return functions
 
-def _make_admin_functions_prompt():
 
-    admin_functions_prompt = f"""
-    You have access to the following tools:
-    {_make_functions()}
-
-    You must follow these instructions:
-    Always select one or more of the above tools based on the user query
-    If a tool is found, you must respond in the JSON format matching the following schema:
-    {{
-    "tools": {{
-            "tool": "<name of the selected tool>",
-            "tool_input": <parameters for the selected tool as explicitly stated in the user's query, matching the tool's JSON schema>
-    }}
-    }}
-    Do not make up any tools or use any tools that are not listed above.
-    Only specify paramaters for tool_input that are clearly defined in the user's prompt that follows.
-    If there are missing required parameters to call a tool, do not return the tool.
-    If there are multiple tools required, make sure a list of tools are returned in a JSON array.
-    If there is no tool that match the user request, you MUST respond with empty json.
-    DO NOT add any additional Notes or Explanations.
+def get_admin_functions_prompt():
     """
-    return admin_functions_prompt
+    Returns the current prompt use to describe how to extract functions.
+
+    Returns:
+        str: The prompt.
+    """
+    return ADMIN_FUNCTIONS_PROMPT
+
+def set_admin_functions_prompt(prompt: str):
+    """
+    Set the prompt which describes how to handle functions.
+
+    Args:
+        prompt (str): The prompt to use to describe how to handle functions.
+
+    Returns:
+        None
+    """
+    global ADMIN_FUNCTIONS_PROMPT
+    ADMIN_FUNCTIONS_PROMPT = prompt
+
+def _make_admin_functions_prompt():
+    prompt = f"""You have access to the following tools:
+    {_make_functions()}
+    {ADMIN_FUNCTIONS_PROMPT}
+    """
+    return prompt
 
 def _parse_tools(response: dict):
     try:
@@ -204,8 +235,22 @@ def _parse_tools(response: dict):
     except Exception as e:
         logger.error(f"Exception parsing response: {str(e)}")
         return None
+    
+def chat_completion_with_oai_functions(client: object, model: str, prompt: str) -> dict[str, str]:
+    messages = [{"role": "user", "content": prompt}]
+    funcs = _make_functions(as_json=False)
+    func_list = []
+    for f in funcs:
+        func_list.append(f["function"])
+    return client.chat.completions.create(
+            model=model,
+            messages=messages,
+            functions=func_list,
+            stream=False,
+        )        
 
-def list_tools(client: object, model: str, prompt: str) -> dict[str, str]:
+
+def chat_completion_with_functions_in_prompt(client: object, model: str, prompt: str) -> dict[str, str]:
     """
     Retrieve a list of tools based on the given model and prompt.
 
@@ -228,13 +273,22 @@ def list_tools(client: object, model: str, prompt: str) -> dict[str, str]:
             model=model,
             messages=messages,
             stream=False,
-        )
+        )        
         try:
             tools_dict = _parse_tools(response)
-
             if tools_dict:
                 if "tools" in tools_dict:
+                    # make the full response as compatible with OpenAI's response as possible
+                    message = response.choices[0].message
+                    first_tool = tools_dict["tools"][0]
+                    first_tool["arguments"] = json.dumps(first_tool["arguments"])
+                    message.function_call = first_tool                    
+                    message.content = None
+                    response.choices[0].finish_reason = "function_call"
                     return response, tools_dict["tools"]
+                else:
+                    response.choices[0].message.function_call = None
+                    return response, []
             else:
                 return response, []
         except Exception as e:
@@ -246,7 +300,21 @@ def list_tools(client: object, model: str, prompt: str) -> dict[str, str]:
             return response, [{"error": f"wrong model name? {str(e)}"}]
         return response, [{"error": f"{str(e)}"}]
 
-def reconcile_response(tools, tool_responses, client, model, original_prompt):
+def generate_reconciled_response(tools, tool_responses, client, model, original_prompt):
+    """
+    Generate a reconciled response using the given tools and tool responses.
+
+    Args:
+        tools: The tools found for generate the responses.
+        tool_responses: The responses generated by the tools.
+        client: The client object used for making API requests.
+        model: The model used for generating the response.
+        original_prompt (str): The original user prompt.
+
+    Returns:
+        tuple: A tuple containing the full response object and the content of the first choice.
+
+    """
     if tool_responses is not None:
         # answer the original question with the results and form a response
         messages = [
@@ -261,20 +329,3 @@ def reconcile_response(tools, tool_responses, client, model, original_prompt):
         return full_response, full_response.choices[0].message.content
     return None, None
 
-def use_tools(client, model, prompt):
-    """
-    A conveinience method to use the specified tools to generate a response to the user's question.
-
-    Args:
-        client (Client): The client object used to interact with the chat API.
-        model (str): The model to use for generating the response.
-        prompt (str): The user's question or prompt.
-
-    Returns:
-        str: The generated response to the user's question.
-        None: If the tool_responses is None.
-    """
-    response, xx = list_tools(client, model, prompt)
-    tool_responses = exec_tools(xx)
-    full_response, answer = reconcile_response(xx, tool_responses, client, model, prompt)
-    return answer
